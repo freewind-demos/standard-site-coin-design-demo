@@ -30,36 +30,74 @@ object Hello extends App {
   trait SiteCoins[T <: Site] {
     def coin(standard: Coin[Standard]): Coin[T] = coin(standard.value)
     def coin(_value: String): Coin[T] = new Coin[T] {
-      override val value: String = _toSite(_value)
-      override def toStandard: Coin[Standard] = StandardCoins.quote(_toStandard(value))
+      override val value: String = _toSiteCoin(_value)
+      override def toStandard: Coin[Standard] = StandardCoins.quote(_toStandardCoin(value))
     }
     def asset(standard: AssetCoin[Standard]): AssetCoin[T] = asset(standard.value)
     def asset(_value: String): AssetCoin[T] = new AssetCoin[T] {
-      override val value: String = _toSite(_value)
-      override def toStandard: AssetCoin[Standard] = StandardCoins.asset(_toStandard(value))
+      override val value: String = _toSiteCoin(_value)
+      override def toStandard: AssetCoin[Standard] = StandardCoins.asset(_toStandardCoin(value))
     }
     def quote(standard: QuoteCoin[Standard]): QuoteCoin[T] = quote(standard.value)
     def quote(_value: String): QuoteCoin[T] = new QuoteCoin[T] {
-      override val value: String = _toSite(_value)
-      override def toStandard: QuoteCoin[Standard] = StandardCoins.quote(_toStandard(value))
+      override val value: String = _toSiteCoin(_value)
+      override def toStandard: QuoteCoin[Standard] = StandardCoins.quote(_toStandardCoin(value))
     }
-    def _toStandard(value: String): String
-    def _toSite(value: String): String
+    def _toStandardCoin(value: String): String
+    def _toSiteCoin(value: String): String
   }
 
-  object StandardCoins extends SiteCoins[Standard] {
-    override def _toStandard(value: String): String = value.toUpperCase
-    override def _toSite(value: String): String = value
+  trait SiteSymbols[T <: Site] {
+    def symbol(_asset: AssetCoin[T], _quote: QuoteCoin[T]): Symbol[T] = new Symbol[T] {
+      override val base: AssetCoin[T] = _asset
+      override val quote: QuoteCoin[T] = _quote
+      override def combined: String = _toSymbolCombined(_asset, _quote)
+    }
+    def _parseCombinedSymbol(combined: String): Symbol[T]
+    def _toSymbolCombined(asset: AssetCoin[T], quote: QuoteCoin[T]): String
   }
 
-  case class Symbol[T <: Site](base: AssetCoin[T], quote: QuoteCoin[T])
+  object StandardCoins extends SiteCoins[Standard] with SiteSymbols[Standard] {
+    override def _toStandardCoin(value: String): String = value.toUpperCase
+    override def _toSiteCoin(value: String): String = value
+    override def _parseCombinedSymbol(combined: String): Symbol[Standard] = combined.split("-") match {
+      case Array(b, q) => symbol(asset(b), quote(q))
+      case _ => throw new Exception("Invalid symbol: " + combined)
+    }
+    override def _toSymbolCombined(asset: AssetCoin[Standard], quote: QuoteCoin[Standard]): String = s"${asset.value}-${quote.value}"
+  }
+
+  trait Symbol[T <: Site] {
+    val base: AssetCoin[T]
+    val quote: QuoteCoin[T]
+    def combined: String
+    def isBaseOn(coin: AssetCoin[T]): Boolean = this.base == coin
+    def isQuoteOn(coin: QuoteCoin[T]): Boolean = this.quote == coin
+
+    def toStandard: Symbol[Standard] = StandardCoins.symbol(base.toStandard, quote.toStandard)
+
+    def canEqual(other: Any): Boolean = other.isInstanceOf[Symbol[T]]
+    override def hashCode(): Int = (base.value + quote.value).hashCode()
+    override def equals(obj: scala.Any): Boolean = obj match {
+      case that: Symbol[T] => (that canEqual this) && this.base == that.base && this.quote == that.quote
+      case _ => false
+    }
+  }
 
   object huobi {
     trait Huobi extends Site
 
-    object HuobiCoins extends SiteCoins[Huobi] {
-      def _toSite(v: String) = v.toLowerCase
-      def _toStandard(v: String) = v.toUpperCase
+    object HuobiCoins extends SiteCoins[Huobi] with SiteSymbols[Huobi] {
+      override def _toSiteCoin(v: String) = v.toLowerCase
+      override def _toStandardCoin(v: String) = v.toUpperCase
+      override def _parseCombinedSymbol(combined: String): Symbol[Huobi] = {
+        val quotes = List("usdt", "btc", "eth")
+        quotes.map(_ -> combined)
+          .find({ case (q, c) => c.endsWith(q) })
+          .map({ case (q, c) => symbol(asset(c.stripSuffix(q)), quote(q)) })
+          .getOrElse(throw new Exception("Invalid symbol"))
+      }
+      override def _toSymbolCombined(asset: AssetCoin[Huobi], quote: QuoteCoin[Huobi]): String = asset.value + quote.value
     }
 
     def fetchPrice(symbol: Symbol[Huobi]): Double = {
@@ -71,25 +109,34 @@ object Hello extends App {
 
   object binance {
     trait Binance extends Site
-    object BinanceCoins extends SiteCoins[Binance] {
+    object BinanceCoins extends SiteCoins[Binance] with SiteSymbols[Binance] {
 
       private val siteMapping = Map("BCH" -> "BCC")
       private val standardMapping = siteMapping.map(_.swap)
 
-      override def _toStandard(v: String): String = {
+      override def _toStandardCoin(v: String): String = {
         val s = v.toUpperCase
         standardMapping.getOrElse(s, s)
       }
-      override def _toSite(v: String): String = {
+      override def _toSiteCoin(v: String): String = {
         val s = v.toUpperCase
         siteMapping.getOrElse(s, s)
       }
+      override def _parseCombinedSymbol(combined: String): Symbol[Binance] = {
+        val quotes = List("USDT", "BTC", "ETH")
+        quotes.map(_ -> combined)
+          .find({ case (q, c) => c.endsWith(q) })
+          .map({ case (q, c) => symbol(asset(c.stripSuffix(q)), quote(q)) })
+          .getOrElse(throw new Exception(s"Invalid symbol: $combined"))
+      }
+
+      override def _toSymbolCombined(asset: AssetCoin[Binance], quote: QuoteCoin[Binance]): String = asset.value + quote.value
     }
 
     def fetchPrice(symbol: Symbol[Binance]): Double = 222
   }
 
-  val result = huobi.fetchPrice(Symbol(HuobiCoins.asset("BTM"), HuobiCoins.quote("BTC")))
+  val result = huobi.fetchPrice(HuobiCoins.symbol(HuobiCoins.asset("BTM"), HuobiCoins.quote("BTC")))
   println(result)
 
 }
